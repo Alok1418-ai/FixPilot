@@ -1,0 +1,27 @@
+From: monitoring (PagerDuty) — P1
+Subject: checkout crashes for SKUs that are not in the catalogue
+
+Any basket that references a SKU we do not have raises an exception at checkout
+instead of simply reporting that there is no stock. It started after the
+catalogue was cut over to the new inventory feed.
+
+$ python3 -m unittest tests.test_inventory -v
+Traceback (most recent call last):
+  File "/srv/shop/app/inventory.py", line 18, in stock_level
+    record = INVENTORY[sku]
+KeyError: 'not-a-real-sku'
+
+During handling of the above exception, another exception occurred:
+
+FAIL: test_unknown_sku_has_no_stock (tests.test_inventory.StockLevelTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/srv/shop/tests/test_inventory.py", line 16, in test_unknown_sku_has_no_stock
+    self.assertEqual(inventory.stock_level("not-a-real-sku"), 0)
+AssertionError: KeyError not raised as expected
+
+Ran 5 tests in 0.004s
+
+FAILED (failures=2, errors=1)
+
+We expect zero stock for an unknown SKU. Please fix today.

@@ -1,0 +1,19 @@
+Subject: empty basket blows up the basket summary endpoint
+
+The pricing summary throws a division error whenever the basket is empty, which
+happens on every "recently viewed" page load. The avg price should just be zero.
+
+$ python3 -m unittest tests.test_pricing -v
+
+ERROR: test_empty_basket_averages_to_zero (tests.test_pricing.AveragePriceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/srv/shop/app/pricing.py", line 11, in average_price
+    return sum(prices) / len(prices)
+ZeroDivisionError: division by zero
+
+Ran 5 tests in 0.002s
+
+FAILED (errors=1)
+
+An empty basket has no average price — treat it as 0 so the page renders.

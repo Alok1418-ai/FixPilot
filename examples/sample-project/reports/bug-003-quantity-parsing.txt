@@ -1,0 +1,35 @@
+Subject: bad quantity in an order file becomes None and the order is dropped silently
+
+When a customer uploads an order with a non-numeric quantity, `parse_quantity`
+returns None instead of raising, so the row is dropped and the customer is
+charged for less than they ordered. Yesterday we shipped 40 units of the wrong
+thing because of this.
+
+$ python3 -m unittest tests.test_notes -v
+
+FAIL: test_text_is_rejected (tests.test_notes.ParseQuantityTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/srv/shop/tests/test_notes.py", line 16, in test_text_is_rejected
+    notes.parse_quantity("many")
+AssertionError: ValueError not raised : None returned instead
+
+FAIL: test_empty_field_is_rejected (tests.test_notes.ParseQuantityTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/srv/shop/tests/test_notes.py", line 20, in test_empty_field_is_rejected
+    notes.parse_quantity("")
+AssertionError: ValueError not raised : None returned instead
+
+FAIL: test_invalid_line_raises (tests.test_notes.ParseLineTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/srv/shop/tests/test_notes.py", line 29, in test_invalid_line_raises
+    notes.parse_line("widget, none")
+AssertionError: ValueError not raised
+
+Ran 6 tests in 0.003s
+
+FAILED (failures=3)
+
+A malformed quantity must fail loudly at the parser, not silently downstream.
