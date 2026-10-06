@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b1020" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Sign in — FixPilot</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="auth-body">
+<main class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="logo" aria-hidden="true">✈</span>
+      <div>
+        <h1>FixPilot</h1>
+        <p class="muted" id="auth-subtitle">Bug reports in, verified patches out.</p>
+      </div>
+    </div>
+
+    <div id="auth-tabs" class="auth-tabs" role="tablist">
+      <button type="button" class="auth-tab active" data-mode="login" role="tab">Sign in</button>
+      <button type="button" class="auth-tab" data-mode="signup" role="tab">Create account</button>
+    </div>
+
+    <form id="auth-form" autocomplete="on" novalidate>
+      <h2 id="auth-title">Welcome back</h2>
+      <p class="hint" id="auth-hint">This server can patch your working tree and run tests, so it is gated behind a sign-in.</p>
+
+      <label class="field">
+        <span>Username</span>
+        <input id="username" name="username" type="text" autocomplete="username"
+               autocapitalize="none" autocorrect="off" spellcheck="false" required />
+      </label>
+
+      <label class="field" id="display-field" hidden>
+        <span>Display name <em class="opt">optional</em></span>
+        <input id="display_name" name="display_name" type="text" autocomplete="nickname" />
+      </label>
+
+      <label class="field">
+        <span>Password</span>
+        <span class="pw-wrap">
+          <input id="password" name="password" type="password" autocomplete="current-password" required minlength="8" />
+          <button type="button" id="toggle-pw" class="pw-toggle" aria-label="Show password">👁</button>
+        </span>
+      </label>
+
+      <p class="pw-note" id="pw-note"></p>
+      <div id="auth-error" class="auth-error" role="alert" hidden></div>
+
+      <button type="submit" class="btn primary auth-submit" id="auth-submit">Sign in</button>
+    </form>
+
+    <p class="auth-foot">
+      Runs on your own machine · passwords are hashed with PBKDF2 and never leave it.
+      <span id="auth-foot-extra"></span>
+    </p>
+  </div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  let mode = "login";
+  let needsSetup = false;
+  let allowSignup = false;
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: body === undefined ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    let payload = {};
+    try { payload = text ? JSON.parse(text) : {}; } catch { payload = { raw: text }; }
+    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+    return payload;
+  }
+
+  function showError(message) {
+    const box = $("auth-error");
+    if (!message) { box.hidden = true; box.textContent = ""; return; }
+    box.hidden = false;
+    box.textContent = message;
+  }
+
+  function applyMode() {
+    const signup = mode === "signup";
+    const setup = needsSetup;
+    $("display-field").hidden = !signup && !setup;
+    $("password").autocomplete = (signup || setup) ? "new-password" : "current-password";
+    $("auth-submit").textContent = setup ? "Create owner account" : signup ? "Create account" : "Sign in";
+    $("auth-title").textContent = setup ? "Set up FixPilot" : signup ? "Create your account" : "Welcome back";
+    $("auth-hint").textContent = setup
+      ? "No account exists yet. The first account becomes the owner of this server."
+      : signup
+        ? "Pick a username and a password of at least 8 characters."
+        : "This server can patch your working tree and run tests, so it is gated behind a sign-in.";
+    $("auth-subtitle").textContent = setup ? "One-time setup" : "Bug reports in, verified patches out.";
+    document.querySelectorAll(".auth-tab").forEach((tab) =>
+      tab.classList.toggle("active", tab.dataset.mode === mode));
+    $("auth-tabs").hidden = setup;
+    if (signup && !allowSignup && !setup) {
+      showError("Sign-up is disabled on this server. Ask the owner, or have them set FIXPILOT_ALLOW_SIGNUP=true.");
+    } else {
+      showError("");
+    }
+  }
+
+  document.querySelectorAll(".auth-tab").forEach((tab) =>
+    tab.addEventListener("click", () => { mode = tab.dataset.mode; applyMode(); }));
+
+  $("toggle-pw").addEventListener("click", () => {
+    const input = $("password");
+    const shown = input.type === "text";
+    input.type = shown ? "password" : "text";
+    $("toggle-pw").setAttribute("aria-label", shown ? "Show password" : "Hide password");
+    $("toggle-pw").textContent = shown ? "👁" : "🙈";
+  });
+
+  $("password").addEventListener("input", () => {
+    const value = $("password").value;
+    const need = 8;
+    $("pw-note").textContent = (mode === "signup" || needsSetup)
+      ? (value.length && value.length < need ? `${need - value.length} more character(s) needed` : "")
+      : "";
+  });
+
+  $("password").addEventListener("keyup", (event) => {
+    if (event.getModifierState && event.getModifierState("CapsLock")) {
+      $("pw-note").textContent = "Caps Lock is on";
+    }
+  });
+
+  $("auth-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    showError("");
+    const path = needsSetup ? "/api/auth/setup" : mode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+    const body = {
+      username: $("username").value.trim(),
+      password: $("password").value,
+      display_name: $("display_name").value.trim(),
+    };
+    if (!body.username || !body.password) { showError("Enter a username and password."); return; }
+    const button = $("auth-submit");
+    button.disabled = true;
+    const label = button.textContent;
+    button.textContent = "Working…";
+    try {
+      await api(path, body);
+      button.textContent = "Signed in — opening…";
+      location.replace("/");
+    } catch (error) {
+      showError(error.message);
+      button.disabled = false;
+      button.textContent = label;
+      $("password").value = "";
+      $("password").focus();
+    }
+  });
+
+  (async function boot() {
+    try {
+      const status = await api("/api/auth/status");
+      if (status.enabled === false) { location.replace("/"); return; }
+      if (status.signed_in) { location.replace("/"); return; }
+      needsSetup = Boolean(status.needs_setup);
+      allowSignup = Boolean(status.allow_signup);
+      $("auth-foot-extra").textContent = needsSetup ? "" : ` ${status.user_count || 0} account(s) on this server.`;
+      applyMode();
+      $("username").focus();
+    } catch (error) {
+      showError(`Cannot reach the FixPilot server: ${error.message}`);
+    }
+  })();
+})();
+</script>
+</body>
+</html>

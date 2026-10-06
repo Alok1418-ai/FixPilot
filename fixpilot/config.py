@@ -103,6 +103,28 @@ class SandboxLimits:
 
 
 @dataclass(slots=True)
+class AuthSettings:
+    """Login gate for the phone-facing server.
+
+    On by default: without it, anyone who can reach the port receives a working
+    mutation token from ``GET /`` and can approve patches and run commands.
+    """
+
+    enabled: bool = _env_bool("AUTH", True)
+    # Self-service account creation. Off by default on purpose — a LAN-exposed
+    # server must not be enrol-able by strangers.
+    allow_signup: bool = _env_bool("ALLOW_SIGNUP", False)
+    session_hours: int = _env_int("AUTH_SESSION_HOURS", 12)
+
+    def public(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "allow_signup": self.allow_signup,
+            "session_hours": self.session_hours,
+        }
+
+
+@dataclass(slots=True)
 class ModelSettings:
     """Local-first model routing configuration."""
 
@@ -149,6 +171,7 @@ class Settings:
     repo_limits: RepoLimits = field(default_factory=RepoLimits)
     sandbox: SandboxLimits = field(default_factory=SandboxLimits)
     models: ModelSettings = field(default_factory=ModelSettings)
+    auth: AuthSettings = field(default_factory=AuthSettings)
 
     def __post_init__(self) -> None:
         if not str(self.data_dir) or str(self.data_dir) == ".":
@@ -168,6 +191,10 @@ class Settings:
     @property
     def worktrees_dir(self) -> Path:
         return self.data_dir / "worktrees"
+
+    @property
+    def auth_dir(self) -> Path:
+        return self.data_dir / "auth"
 
     @property
     def audit_log(self) -> Path:
@@ -200,6 +227,7 @@ class Settings:
             "python": sys.version.split()[0],
             "sandbox": self.sandbox.public(),
             "models": self.models.public(),
+            "auth": self.auth.public(),
         }
 
 
