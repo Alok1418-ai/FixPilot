@@ -279,17 +279,8 @@ fixpilot/
 
 ---
 
-## 👥 Team
 
-**Team MOHOMAYA**
-
-| Name | Role |
-|---|---|
-| Abir Ghosh | Captain |
-| Arijit Gupta | Team Member |
-| Alok Halder | Team Member |
-
-Built for the **iQOO Hackathon 2026** — *Developer Tools* track.
+| Alok Halder |
 
 ---
 
