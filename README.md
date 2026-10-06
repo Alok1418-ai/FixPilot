@@ -1,21 +1,59 @@
-# FixPilot
+<div align="center">
 
-**Bug reports in. Verified patches out. From your phone.**
+# 🛠️ FixPilot
 
-FixPilot is a phone-first, autonomous software-maintenance agent. It takes a bug report in
-whatever form you have it — a sentence, a voice note, a pasted traceback, a screenshot — works
-out *why* the code is broken using your actual repository as evidence, drafts a small reviewable
-patch, **waits for your approval**, then applies it, runs your tests, refines the patch if they
-fail, verifies the result, and can roll the whole thing back.
+### From *"I found a bug"* → *"I understand why"* → *"I fixed it"* → *"I verified it"*
+
+**A phone-first, AI-powered autonomous debugging and maintenance agent.**
+Investigate, fix, test and verify real software issues — straight from your smartphone.
+
+![Platform](https://img.shields.io/badge/Platform-Phone--first-0A2540?style=for-the-badge)
+![AI](https://img.shields.io/badge/AI-Local%20%26%20Open--source-0E7C86?style=for-the-badge)
+![Safety](https://img.shields.io/badge/Patches-Human%20Approved-1F6FEB?style=for-the-badge)
+![Track](https://img.shields.io/badge/Track-Developer%20Tools-F28C28?style=for-the-badge)
+
+</div>
+
+---
+
+## 🎯 The problem
+
+Bugs don't wait for you to sit at your desk. A production error arrives while you're commuting, a
+teammate sends a crash screenshot at night, a CI run fails while you're away from your laptop.
+
+Today the phone is only a **passive companion** for developers: you can read logs and chat
+messages, but you can't *investigate*, *fix* and *verify* anything. Fixing a bug still means
+opening a laptop, finding the right code, guessing at the cause, patching, and re-running tests by
+hand.
+
+FixPilot turns the smartphone into a **trusted, multimodal, autonomous developer command center**.
+You describe the problem by voice, text, error log or screenshot; FixPilot reads your codebase,
+finds the root cause using real evidence, proposes a safe patch, waits for your approval, applies
+it, runs the tests, refines the fix if something fails, and shows you the verified result.
+
+> The phone is the **control interface**. The developer's computer does the heavy lifting.
+
+FixPilot is a phone-first, autonomous software-maintenance agent. A bug report goes in — a
+sentence, a voice note, a pasted traceback, a screenshot — and a **verified** patch comes out,
+with a mandatory human approval step in between.
 
 Everything runs on the machine that holds the repo. No code leaves it unless you explicitly
 configure a cloud model. The default reasoning path is local and deterministic, so the product
 works with **zero API keys**.
 
-```
-"I found a bug"  →  "I understand why"  →  "I fixed it"  →  "I verified it"
-                          ↑
-                approval gate (nothing is written before you say yes)
+```mermaid
+flowchart LR
+    A["📱 Report the bug<br/>voice · text · log · screenshot"] --> B["🔍 Understand context<br/>code · Git · deps · tests"]
+    B --> C["🧠 Find root cause<br/>evidence-backed"]
+    C --> D["📝 Propose patch<br/>+ plain-language explanation"]
+    D --> E{"✅ You approve?"}
+    E -- "No / edit" --> D
+    E -- "Yes" --> F["⚙️ Apply patch<br/>in sandbox"]
+    F --> G["🧪 Run relevant tests"]
+    G --> H{"Pass?"}
+    H -- "Fail" --> I["🔁 Refine patch"]
+    I --> F
+    H -- "Pass" --> J["🎉 Verified result<br/>+ rollback + session replay"]
 ```
 
 ---
@@ -116,8 +154,15 @@ Exposed tools: `fixpilot_overview`, `fixpilot_search`, `fixpilot_read_file`,
 `confirm=true`, and every call is written to the audit log.
 
 **iQOO Office Kit bridge** (`fixpilot/officekit.py`) — pairs a phone with the workstation and
-relays jobs the phone cannot do itself (run the suite, apply a patch, collect evidence, sync the
-repo) over a durable queue with heartbeats, claim/complete and a worker:
+relays jobs the phone cannot do itself over a durable queue with heartbeats, claim/complete and a
+worker:
+
+| Phone handles | Computer handles (via Office Kit) |
+| --- | --- |
+| Voice, text and screenshot capture | Repository access |
+| Plan, diagnosis and diff review | Code execution and test runs |
+| Approval, rejection and rollback | Heavier model inference and deeper computation |
+| Session replay and status | Build and dependency tooling |
 
 ```bash
 python3 -m fixpilot officekit pair --name "iQOO 13"
@@ -217,6 +262,29 @@ independently_confirmed 1.0 · false_positives 0
 refused_to_guess_on_vague_report True · sandbox_blocked_all True
 mean_confidence 0.92 · blast_radius_respected True
 ```
+
+---
+
+## Roadmap
+
+Everything below is implemented and covered by the test suite or the benchmark harness; the
+"next" column is where the project goes from here.
+
+| Capability | Status |
+| --- | --- |
+| Voice, text, log and screenshot intake | ✅ shipped (`fixpilot/models/media.py`) |
+| Repository context builder (code, Git, dependencies, tests) | ✅ shipped (`fixpilot/repo/`) |
+| Evidence-backed root-cause analysis | ✅ 3/3 fixture bugs, scorecard 1.0 |
+| Patch proposal with approval flow | ✅ approval gate is mandatory by default |
+| Automatic test run and patch refinement loop | ✅ refine + auto-rollback verified |
+| Security sandbox and unsafe-command blocking | ✅ 9/9 dangerous commands blocked |
+| Rollback and debugging-session replay | ✅ byte-exact backups + event log |
+| Project memory | ✅ facts, lessons and verified fixes per repo |
+| Skills and MCP tool support | ✅ 11 skills · 13 MCP tools |
+| iQOO Office Kit phone ↔ computer integration | ✅ pair, queue, worker round trip |
+| Container-isolated execution backends | ⏭ next (subprocess sandbox today) |
+| Multi-language root-cause heuristics beyond Python/JS/Go/Java parsers | ⏭ next |
+| Push-to-branch and PR creation from the phone | ⏭ next (`AUTO_PUSH` is wired but off) |
 
 ---
 
