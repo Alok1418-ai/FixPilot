@@ -22,12 +22,47 @@
     <div class="pills">
       <span id="pill-link" class="pill">link</span>
       <span id="pill-model" class="pill">model</span>
+      <button id="pill-user" class="pill pill-btn" type="button" title="Signed in — tap to sign out">👤</button>
     </div>
   </header>
 
   <main>
+    <!-- ============ DASHBOARD ============ -->
+    <section id="view-home" class="view active">
+      <div class="kpis" id="kpi-grid">
+        <div class="kpi accent"><span class="v" id="kpi-sessions">–</span><span class="k">Sessions</span><span class="sub" id="kpi-sessions-sub">loading…</span></div>
+        <div class="kpi ok"><span class="v" id="kpi-verified">–</span><span class="k">Verified</span><span class="sub" id="kpi-verified-sub">tests pass</span></div>
+        <div class="kpi"><span class="v" id="kpi-rate">–</span><span class="k">Verify rate</span><span class="sub" id="kpi-rate-sub">of attempted fixes</span></div>
+        <div class="kpi"><span class="v" id="kpi-lessons">–</span><span class="k">Lessons</span><span class="sub" id="kpi-lessons-sub">reusable fixes</span></div>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Repository</div>
+          <button id="btn-refresh-home" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <div class="md" id="home-repo">loading…</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Session outcomes</div>
+        <div class="bars" id="home-bars"><p class="hint">No sessions yet.</p></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Recent activity</div>
+        <ul class="activity" id="home-activity"><li><span class="dot"></span><span><span class="t">Nothing yet</span></span><span class="when"></span></li></ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Safety snapshot</div>
+        <div id="home-safety-stats" class="statgrid"></div>
+        <div class="md" id="home-safety">loading…</div>
+      </div>
+    </section>
+
     <!-- ============ REPORT / SESSION VIEW ============ -->
-    <section id="view-report" class="view active">
+    <section id="view-report" class="view">
       <div id="composer" class="card">
         <label class="card-title" for="report-text">What broke?</label>
         <p class="hint">Paste a traceback, describe the bug, dictate it, or attach a screenshot. FixPilot finds the cause, writes the patch, and proves it with your tests.</p>
@@ -37,8 +72,13 @@
           <label class="btn ghost" for="file-input">📷 Attach screenshot</label>
           <input id="file-input" type="file" accept="image/*" capture="environment" multiple hidden />
           <button id="btn-sample" class="btn ghost" type="button">⚡ Load sample bug</button>
+          <button id="btn-intake" class="btn ghost" type="button">🔍 Preview intake</button>
         </div>
         <div id="attachments" class="chips"></div>
+        <details id="intake-box" class="hidden">
+          <summary>What FixPilot extracted</summary>
+          <div class="md" id="intake-body"></div>
+        </details>
         <div class="row">
           <button id="btn-investigate" class="btn primary" type="button">Investigate &amp; fix</button>
           <button id="btn-clear" class="btn ghost" type="button">Clear</button>
@@ -47,7 +87,10 @@
       </div>
 
       <div id="pipeline" class="card hidden">
-        <div class="card-title">Progress</div>
+        <div class="row between">
+          <div class="card-title">Progress</div>
+          <button id="btn-reinvestigate" class="btn ghost small" type="button">🔎 Re-investigate</button>
+        </div>
         <ol id="timeline" class="timeline"></ol>
       </div>
 
@@ -68,7 +111,12 @@
       <div id="patch" class="card hidden">
         <div class="card-title">Proposed fix <span id="risk-badge" class="pill"></span></div>
         <div class="md" id="patch-body"></div>
+        <div id="patch-stats" class="chips"></div>
         <pre class="diff" id="patch-diff"></pre>
+        <details id="blast-radius-box" class="hidden">
+          <summary>Blast radius &amp; risk notes</summary>
+          <div class="md" id="blast-radius-body"></div>
+        </details>
         <div class="row">
           <button id="btn-approve" class="btn primary" type="button">✅ Approve &amp; verify</button>
           <button id="btn-reject" class="btn danger ghost" type="button">Reject</button>
@@ -86,8 +134,10 @@
         <div class="row wrap">
           <button id="btn-rollback" class="btn ghost" type="button">↩︎ Roll back</button>
           <button id="btn-refine" class="btn ghost" type="button">🔁 Try another strategy</button>
+          <button id="btn-apply" class="btn ghost" type="button">▶ Re-run verification</button>
           <button id="btn-report" class="btn ghost" type="button">📄 Open report</button>
           <button id="btn-replay" class="btn ghost" type="button">⏱ Replay session</button>
+          <button id="btn-cancel" class="btn ghost danger" type="button">✕ Cancel session</button>
         </div>
       </div>
 
@@ -111,6 +161,7 @@
 
     <!-- ============ CONSOLE ============ -->
     <section id="view-console" class="view">
+      <div class="subhead"><button type="button" class="btn ghost small back" data-back="more">‹ More</button><div><div class="card-title">Console</div><p class="hint">Run policy-checked commands and ask questions about the repo.</p></div></div>
       <div class="card">
         <div class="card-title">Sandboxed console</div>
         <p class="hint">Every command is checked against the safety policy first. Destructive, privileged or network-reaching commands are refused unless you have explicitly enabled them.</p>
@@ -131,8 +182,80 @@
       </div>
     </section>
 
+    <!-- ============ REPO ============ -->
+    <section id="view-repo" class="view">
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Search the codebase</div>
+          <button id="btn-search" class="btn primary small" type="button">Search</button>
+        </div>
+        <input id="search-input" class="input" type="search" placeholder="stock_level, KeyError, parse_quantity…" />
+        <div id="search-results" class="hidden"></div>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Files <span id="file-count" class="pill">0</span></div>
+          <button id="btn-refresh-repo" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <input id="tree-filter" class="input" type="search" placeholder="Filter files…" />
+        <ul id="file-tree" class="files"></ul>
+      </div>
+
+      <div id="file-viewer" class="card hidden">
+        <div class="row between">
+          <div class="card-title" id="file-name">file</div>
+          <button id="btn-close-file" class="btn ghost small" type="button">✕</button>
+        </div>
+        <div id="file-meta" class="chips"></div>
+        <pre class="terminal" id="file-body"></pre>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Working tree</div>
+          <button id="btn-refresh-diff" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <p class="hint">Uncommitted changes in the target repository right now.</p>
+        <span id="worktree-dirty" class="pill">checking…</span>
+        <pre class="diff hidden" id="worktree-diff"></pre>
+      </div>
+    </section>
+
+    <!-- ============ SAFETY ============ -->
+    <section id="view-safety" class="view">
+      <div class="subhead"><button type="button" class="btn ghost small back" data-back="more">‹ More</button><div><div class="card-title">Safety</div><p class="hint">Sandbox verdicts, the audit log and what past sessions learned.</p></div></div>
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Sandbox</div>
+          <button id="btn-refresh-sandbox" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <div id="sandbox-stats" class="statgrid"></div>
+        <div class="md" id="sandbox-body">loading…</div>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Audit log <span id="audit-count" class="pill">0</span></div>
+          <button id="btn-refresh-audit" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <p class="hint">Every model call, command, approval and patch write — newest first.</p>
+        <ul id="audit-list" class="audit"></ul>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Lessons learned</div>
+          <button id="btn-refresh-lessons" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <div id="lesson-stats" class="statgrid"></div>
+        <ul id="lesson-list" class="lessons"></ul>
+      </div>
+    </section>
+
     <!-- ============ SYSTEM ============ -->
     <section id="view-system" class="view">
+      <div class="subhead"><button type="button" class="btn ghost small back" data-back="more">‹ More</button><div><div class="card-title">System</div><p class="hint">Runtime, model routing, skills, memory and the Office Kit bridge.</p></div></div>
       <div class="card">
         <div class="row between">
           <div class="card-title">Repository &amp; runtime</div>
@@ -153,17 +276,61 @@
         <div class="md" id="memory-body"></div>
       </div>
       <div class="card">
-        <div class="card-title">iQOO Office Kit bridge</div>
+        <div class="row between">
+          <div class="card-title">iQOO Office Kit bridge <span id="officekit-mode" class="pill">…</span></div>
+          <button id="btn-refresh-officekit" class="btn ghost small" type="button">Refresh</button>
+        </div>
         <div class="md" id="officekit-body"></div>
+
+        <div class="row wrap" style="margin-top:10px">
+          <input id="pair-name" class="input" type="text" placeholder="Device name (e.g. iQOO 13)" style="flex:1;min-width:170px" />
+          <button id="btn-pair" class="btn primary" type="button">📲 Pair device</button>
+        </div>
+        <div id="pair-result" class="hidden">
+          <p class="hint">Show this code on the phone:</p>
+          <div id="pair-code" class="paircode"></div>
+          <p id="pair-note" class="hint"></p>
+        </div>
+
+        <details>
+          <summary>Job queue <span id="queue-count" class="pill">0</span></summary>
+          <div class="row wrap" style="margin-top:8px">
+            <select id="job-kind" class="input" style="flex:1;min-width:150px"></select>
+            <button id="btn-enqueue" class="btn ghost small" type="button">＋ Queue job</button>
+            <button id="btn-refresh-jobs" class="btn ghost small" type="button">Refresh</button>
+          </div>
+          <ul id="job-list" class="jobs"></ul>
+        </details>
       </div>
     </section>
+    <!-- ============ MORE (hub) ============ -->
+    <section id="view-more" class="view">
+      <div class="card">
+        <div class="card-title">More</div>
+        <p class="hint">Power tools and server state.</p>
+        <ul class="hub">
+          <li data-goto="console"><span class="hub-i">⌨︎</span><span><b>Console</b><small>Run sandboxed commands, ask about the repo</small></span><span class="hub-a">›</span></li>
+          <li data-goto="safety"><span class="hub-i">🛡</span><span><b>Safety</b><small>Sandbox policy, audit log, lessons learned</small></span><span class="hub-a">›</span></li>
+          <li data-goto="system"><span class="hub-i">⚙︎</span><span><b>System</b><small>Runtime, models, skills, memory, Office Kit</small></span><span class="hub-a">›</span></li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">Account</div>
+        <div class="md" id="account-body">loading…</div>
+        <div class="row wrap">
+          <button id="btn-logout" class="btn ghost danger" type="button">↩︎ Sign out</button>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <nav class="tabbar" role="tablist">
-    <button class="tab active" data-view="report" role="tab">🛠 Fix</button>
-    <button class="tab" data-view="sessions" role="tab">🗂 Sessions</button>
-    <button class="tab" data-view="console" role="tab">⌨︎ Console</button>
-    <button class="tab" data-view="system" role="tab">⚙︎ System</button>
+    <button class="tab active" data-view="home" role="tab"><span class="tab-i">📊</span>Home</button>
+    <button class="tab" data-view="report" role="tab"><span class="tab-i">🛠</span>Fix</button>
+    <button class="tab" data-view="sessions" role="tab"><span class="tab-i">🗂</span>Sessions</button>
+    <button class="tab" data-view="repo" role="tab"><span class="tab-i">📁</span>Repo</button>
+    <button class="tab" data-view="more" role="tab"><span class="tab-i">⋯</span>More</button>
   </nav>
 
   <div id="overlay" class="overlay hidden"><div class="spinner"></div><p id="overlay-text">working…</p></div>

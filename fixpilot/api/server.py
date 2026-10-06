@@ -15,6 +15,7 @@ product runs with zero installs.  Design decisions worth knowing:
 
 from __future__ import annotations
 
+import calendar
 import errno
 import json
 import mimetypes
@@ -32,9 +33,24 @@ from ..config import Settings
 from ..core.agent import FixPilotAgent
 from ..officekit import OfficeKitBridge
 from ..util import excerpt, new_id, now_iso, redact
+from ..security.auth import AuthError, AuthStore
 from ..security.secrets import is_sensitive_path, scan_text
 
 MAX_BODY_BYTES = 8 * 1024 * 1024  # screenshots as base64
+SESSION_COOKIE = "fixpilot_session"
+# Reachable before login: the login screen, its assets, and the endpoints the
+# login screen itself needs.  Everything else requires a session.
+PUBLIC_PATHS = {
+    "/api/health",
+    "/api/auth/status",
+    "/api/auth/login",
+    "/api/auth/signup",
+    "/api/auth/setup",
+    # Sign-out only ever revokes the caller's own session, so it must keep
+    # working even when the page's token state has gone stale.
+    "/api/auth/logout",
+}
+PUBLIC_STATIC = {"login.html", "styles.css", "app.js", "sw.js", "manifest.webmanifest", "icon.svg"}
 
 
 @dataclass
@@ -48,6 +64,8 @@ class Request:
     remote: str = ""
     params: dict[str, str] = field(default_factory=dict)
     token: str = ""
+    cookie: dict[str, str] = field(default_factory=dict)
+    user: Any = None
 
     def q(self, name: str, default: str = "") -> str:
         values = self.query.get(name)
@@ -55,6 +73,10 @@ class Request:
 
     def param(self, name: str, default: str = "") -> str:
         return self.params.get(name, default)
+
+    def session_token(self) -> str:
+        """Session token from the cookie, or the header for non-browser clients."""
+        return self.cookie.get(SESSION_COOKIE, "") or self.headers.get("x-fixpilot-session", "")
 
 
 @dataclass
@@ -64,6 +86,7 @@ class Response:
     content_type: str = "application/json"
     raw: bytes | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    set_cookie: str = ""
 
 
 class ApiError(Exception):
@@ -79,6 +102,13 @@ class FixPilotServer:
         self.settings = settings
         self.token = new_id("tok", 24)
         self.require_token = require_token
+        self.auth = AuthStore(
+            settings.auth_dir,
+            allow_signup=settings.auth.allow_signup,
+            session_hours=settings.auth.session_hours,
+        )
+        # `--no-auth` means "trusted local machine": no token and no login gate.
+        self.auth_enabled = bool(settings.auth.enabled and require_token)
         self.bridge = OfficeKitBridge(settings)
         self.static_dir = Path(__file__).resolve().parent.parent / "web"
         self.started_at = now_iso()
@@ -101,6 +131,7 @@ class FixPilotServer:
         return decorator
 
     def dispatch(self, request: Request) -> Response:
+        request.user = self._authenticate(request)
         for method, pattern, handler in self.routes:
             if method != request.method:
                 continue
@@ -108,18 +139,33 @@ class FixPilotServer:
             if not match:
                 continue
             request.params = {key: urllib.parse.unquote(value) for key, value in match.groupdict().items()}
-            if request.method == "POST" and self.require_token and request.token != self.token:
-                raise ApiError(401, "invalid or missing FixPilot token (X-FixPilot-Token header)")
+            if request.path not in PUBLIC_PATHS:
+                if self.auth_enabled and request.user is None:
+                    raise ApiError(401, "not signed in")
+                if request.method == "POST" and self.require_token and request.token != self.token:
+                    raise ApiError(401, "invalid or missing FixPilot token (X-FixPilot-Token header)")
             return handler(request)
         if request.path.startswith("/api/"):
             raise ApiError(404, f"no route for {request.method} {request.path}")
         return self._serve_static(request)
+
+    def _authenticate(self, request: Request):
+        if not self.auth_enabled:
+            return None
+        return self.auth.session_user(request.session_token())
 
     # ------------------------------------------------------------------
     # Routes
     # ------------------------------------------------------------------
     def _register_routes(self) -> None:
         for method, path, handler in (
+            ("GET", r"/api/auth/status", self.h_auth_status),
+            ("POST", r"/api/auth/setup", self.h_auth_setup),
+            ("POST", r"/api/auth/login", self.h_auth_login),
+            ("POST", r"/api/auth/signup", self.h_auth_signup),
+            ("POST", r"/api/auth/logout", self.h_auth_logout),
+            ("GET", r"/api/auth/me", self.h_auth_me),
+            ("GET", r"/api/dashboard", self.h_dashboard),
             ("GET", r"/api/health", self.h_health),
             ("GET", r"/api/overview", self.h_overview),
             ("GET", r"/api/skills", self.h_skills),
@@ -161,6 +207,158 @@ class FixPilotServer:
             ("POST", r"/api/officekit/jobs/(?P<id>[^/]+)/complete", self.h_officekit_job_complete),
         ):
             self.route(method, path, handler)
+
+    # -- authentication -----------------------------------------------
+    def h_auth_status(self, request: Request) -> Response:
+        """Pre-login: just enough state for the login screen to render."""
+        if not self.auth_enabled:
+            return Response(200, {"enabled": False, "needs_setup": False, "allow_signup": False,
+                                  "signed_in": True, "user": None, "user_count": 0})
+        info = self.auth.describe()
+        user = self.auth.session_user(request.session_token())
+        info["signed_in"] = user is not None
+        info["user"] = user.public() if user else None
+        return Response(200, info)
+
+    def _signed_in(self, user, request: Request, status: int = 200) -> Response:
+        token = self.auth.create_session(
+            user,
+            user_agent=request.headers.get("user-agent", ""),
+            remote=request.remote,
+        )
+        max_age = max(1, self.settings.auth.session_hours) * 3600
+        return Response(
+            status,
+            {"ok": True, "user": user.public(), "token": self.token},
+            set_cookie=f"{SESSION_COOKIE}={token}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Strict",
+        )
+
+    def h_auth_setup(self, request: Request) -> Response:
+        """One-time creation of the owner account. Refuses once a user exists."""
+        if not self.auth_enabled:
+            raise ApiError(400, "authentication is disabled on this server")
+        if not self.auth.needs_setup():
+            raise ApiError(409, "FixPilot is already set up — sign in instead")
+        try:
+            user = self.auth.create_user(
+                str(request.body.get("username", "")),
+                str(request.body.get("password", "")),
+                role="owner",
+                display_name=str(request.body.get("display_name", "")),
+            )
+        except AuthError as exc:
+            raise ApiError(400, str(exc))
+        self.agent.audit.record({"kind": "auth.setup", "user": user.username, "role": user.role})
+        return self._signed_in(user, request, 201)
+
+    def h_auth_login(self, request: Request) -> Response:
+        if not self.auth_enabled:
+            raise ApiError(400, "authentication is disabled on this server")
+        attempted = str(request.body.get("username", ""))[:64]
+        user = self.auth.authenticate(attempted, str(request.body.get("password", "")))
+        if user is None:
+            self.agent.audit.record({"kind": "auth.login_failed", "attempted": attempted})
+            raise ApiError(401, "wrong username or password")
+        self.agent.audit.record({"kind": "auth.login", "user": user.username, "remote": request.remote})
+        return self._signed_in(user, request)
+
+    def h_auth_signup(self, request: Request) -> Response:
+        if not self.auth_enabled:
+            raise ApiError(400, "authentication is disabled on this server")
+        if self.auth.needs_setup():
+            raise ApiError(409, "complete the one-time setup first")
+        if not self.settings.auth.allow_signup:
+            raise ApiError(403, "sign-up is disabled on this server — ask the owner, or set FIXPILOT_ALLOW_SIGNUP=true")
+        try:
+            user = self.auth.create_user(
+                str(request.body.get("username", "")),
+                str(request.body.get("password", "")),
+                display_name=str(request.body.get("display_name", "")),
+            )
+        except AuthError as exc:
+            raise ApiError(400, str(exc))
+        self.agent.audit.record({"kind": "auth.signup", "user": user.username})
+        return self._signed_in(user, request, 201)
+
+    def h_auth_logout(self, request: Request) -> Response:
+        token = request.session_token()
+        if token and self.auth_enabled:
+            self.auth.revoke(token)
+        return Response(200, {"ok": True}, set_cookie=f"{SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict")
+
+    def h_auth_me(self, request: Request) -> Response:
+        if not self.auth_enabled:
+            return Response(200, {"signed_in": True, "user": None, "users": []})
+        if request.user is None:
+            raise ApiError(401, "not signed in")
+        return Response(200, {"signed_in": True, "user": request.user.public(), "users": self.auth.list_users()})
+
+    # -- dashboard -----------------------------------------------------
+    def h_dashboard(self, request: Request) -> Response:
+        """One round trip with everything the home screen shows."""
+        sessions = self.agent.list_sessions(limit=300)
+        by_status: dict[str, int] = {}
+        for session in sessions:
+            key = str(session.get("status", "unknown"))
+            by_status[key] = by_status.get(key, 0) + 1
+        total = len(sessions)
+        verified = by_status.get("verified", 0)
+        attempted = verified + by_status.get("rolled_back", 0) + by_status.get("failed", 0)
+        cutoff = time.time() - 86400
+        recent = [
+            session for session in sessions
+            if _epoch(str(session.get("updated_at", ""))) >= cutoff
+        ]
+        sandbox = self.agent.executor.stats()
+        lessons = self.agent.lessons.summary()
+        overview = self.agent.overview()
+        repo = overview.get("repo", {})
+        stats = repo.get("stats", {})
+        models = self.agent.router.describe()
+        return Response(200, {
+            "server": {
+                "product": "FixPilot",
+                "started_at": self.started_at,
+                "now": now_iso(),
+                "repo": str(repo.get("root", "")),
+                "branch": repo.get("git_branch") or "",
+                "dirty": bool(repo.get("dirty")),
+                "approval_gate": bool(self.settings.require_approval),
+                "model_strategy": models.get("strategy", ""),
+                "cloud_allowed": bool(models.get("cloud_allowed")),
+            },
+            "codebase": {
+                "files": stats.get("files", 0),
+                "source_files": stats.get("source_files", 0),
+                "test_files": stats.get("test_files", 0),
+                "symbols": stats.get("symbols", 0),
+                "lines": stats.get("lines", 0),
+                "languages": stats.get("languages", {}),
+            },
+            "sessions": {
+                "total": total,
+                "by_status": by_status,
+                "last_24h": len(recent),
+                "verified": verified,
+                "verify_rate": round(verified / attempted, 3) if attempted else None,
+                "latest": sessions[:6],
+            },
+            "safety": {
+                "commands_run": sandbox.get("commands_run", 0),
+                "by_decision": sandbox.get("by_decision", {}),
+                "network_allowed": bool(self.settings.sandbox.allow_network),
+                "dep_install_allowed": bool(self.settings.sandbox.allow_dependency_install),
+                "policy_rules": self.agent.policy.describe().get("rules", 0),
+                "recent_audit": self.agent.audit.tail(limit=10),
+            },
+            "knowledge": {
+                "lessons": lessons.get("total", 0),
+                "verified_lessons": lessons.get("verified", 0),
+                "reused": lessons.get("reused", 0),
+                "facts": self.agent.memory.load().summary().get("facts", 0),
+                "skills": len(self.agent.registry),
+            },
+        })
 
     # -- health / introspection ----------------------------------------
     def h_health(self, request: Request) -> Response:
@@ -420,17 +618,27 @@ class FixPilotServer:
             target.relative_to(self.static_dir.resolve())
         except ValueError:
             raise ApiError(403, "forbidden")
+        signed_in = (not self.auth_enabled) or self.auth.session_user(request.session_token()) is not None
+        if not signed_in and target.name not in PUBLIC_STATIC:
+            # Not signed in: the login shell is the only page served, and it
+            # deliberately gets *no* mutation token.
+            return self._html_file(self.static_dir / "login.html", inject_token=False)
         if not target.is_file():
             target = self.static_dir / "index.html"
             if not target.is_file():
                 raise ApiError(404, "web assets not bundled")
         content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         if target.name == "index.html":
-            html = target.read_text(encoding="utf-8")
-            html = html.replace("__FIXPILOT_TOKEN__", self.token)
-            body = html.encode("utf-8")
-            return Response(200, None, "text/html; charset=utf-8", raw=body)
+            return self._html_file(target, inject_token=True)
         return Response(200, None, content_type, raw=target.read_bytes())
+
+    def _html_file(self, path: Path, *, inject_token: bool) -> Response:
+        if not path.is_file():
+            raise ApiError(404, f"{path.name} not bundled")
+        html = path.read_text(encoding="utf-8")
+        if inject_token:
+            html = html.replace("__FIXPILOT_TOKEN__", self.token)
+        return Response(200, None, "text/html; charset=utf-8", raw=html.encode("utf-8"))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -496,6 +704,7 @@ class Handler(BaseHTTPRequestHandler):
             raw_body=raw_body,
             remote=self.client_address[0] if self.client_address else "",
             token=token,
+            cookie=_parse_cookies(self.headers.get("Cookie", "")),
         )
         try:
             response = app.dispatch(request)
@@ -522,6 +731,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         for key, value in response.headers.items():
             self.send_header(key, value)
+        if response.set_cookie:
+            self.send_header("Set-Cookie", response.set_cookie)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -563,13 +774,20 @@ class Server:
 
     def banner(self) -> str:
         lan = _lan_ip()
-        lines = [
-            "",
-            "  FixPilot is running.",
-            f"  Local:   http://127.0.0.1:{self.settings.port}/?token={self.app.token}",
-        ]
+        gated = self.app.auth_enabled
+        local = f"http://127.0.0.1:{self.settings.port}/"
+        lines = ["", "  FixPilot is running."]
+        lines.append(f"  Local:   {local}" + ("" if gated else f"?token={self.app.token}"))
         if lan:
-            lines.append(f"  Phone:   http://{lan}:{self.settings.port}/?token={self.app.token}")
+            phone = f"http://{lan}:{self.settings.port}/"
+            lines.append(f"  Phone:   {phone}" + ("" if gated else f"?token={self.app.token}"))
+        if gated:
+            lines.append(
+                "  Auth:    sign-in required"
+                + (" — first visit creates the owner account" if self.app.auth.needs_setup() else "")
+            )
+            if not self.settings.auth.allow_signup:
+                lines.append("  Sign-up: disabled (set FIXPILOT_ALLOW_SIGNUP=true to allow it)")
         lines += [
             f"  Repo:    {self.settings.repo_root}",
             f"  Agent:   {len(self.agent.registry)} skills · model strategy '{self.settings.models.strategy}'",
@@ -577,6 +795,24 @@ class Server:
             "",
         ]
         return "\n".join(lines)
+
+
+def _parse_cookies(header: str) -> dict[str, str]:
+    """Minimal ``Cookie: a=1; b=2`` parser (no quoting/escaping in our own cookies)."""
+    cookies: dict[str, str] = {}
+    for part in (header or "").split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name:
+            cookies[name] = value.strip()
+    return cookies
+
+
+def _epoch(stamp: str) -> float:
+    """Parse an ISO-8601 UTC stamp into a POSIX timestamp (0.0 when unparsable)."""
+    try:
+        return float(calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")))
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _lan_ip() -> str:

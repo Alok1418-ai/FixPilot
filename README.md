@@ -72,7 +72,8 @@ python3 -m fixpilot --repo examples/sample-project status
 
 # 2. start the phone-facing server (binds 0.0.0.0:8787)
 python3 -m fixpilot --repo /path/to/your/repo serve --verbose
-#    open http://<your-computer>:8787 on the phone — the page prints its own token
+#    open http://<your-computer>:8787 on the phone — the first visit asks you to
+#    create the owner account, then you land on the dashboard
 
 # 3. or drive it from the shell
 python3 -m fixpilot --repo /path/to/your/repo fix "$(cat traceback.txt)"
@@ -120,6 +121,20 @@ an **executed** test run that actually passes. Otherwise the session stays `part
 **Phone PWA** (`fixpilot/web/`) — offline-capable single page, no build step, served from the
 same process as the API. `GET /` inlines the mutation token into the page so the phone can
 approve/apply; `sw.js` caches the shell; every request is same-origin and relative.
+
+Five tabs, each backed by the JSON API:
+
+| Tab | What you can do | Endpoints |
+| --- | --- | --- |
+| **📊 Home** | Dashboard: KPIs (sessions, verified, verify rate, lessons), repo state, session-outcome bars, recent activity, safety snapshot | `/api/dashboard` |
+| **🛠 Fix** | Report by voice / text / log / screenshot, preview what was understood, review the patch (diff, stats, blast radius, risk), approve, apply, re-verify, refine, roll back, replay | `/api/input`, `/api/samples`, `/api/sessions*` |
+| **🗂 Sessions** | Browse and reopen past debugging sessions | `/api/sessions` |
+| **📁 Repo** | Search symbols and code, browse the file tree, read any file (secrets redacted), see the live working-tree diff | `/api/search`, `/api/tree`, `/api/file`, `/api/diff/worktree` |
+| **⋯ More** | Hub for **Console** (`/api/command`, `/api/ask`), **Safety** (`/api/sandbox`, `/api/audit`, `/api/lessons`) and **System** (`/api/overview`, `/api/models`, `/api/skills`, `/api/memory`, `/api/officekit*`), plus the signed-in account and sign-out | — |
+
+A health poll every 15 s drives the link pill, so a dropped server is visible on screen rather
+than only as a failed request. An expired session bounces you back to the sign-in screen instead
+of failing silently.
 
 **CLI** (`python3 -m fixpilot …`)
 
@@ -176,6 +191,14 @@ python3 -m fixpilot officekit worker
 
 This is the part that makes an autonomous agent usable on a real repository.
 
+* **Sign-in gate.** `FIXPILOT_AUTH=true` by default. Before this existed, `GET /` inlined a valid
+  mutation token into the page for *anyone* who could reach the port — so any device on the LAN
+  could approve patches and run commands. The token only ever stopped cross-origin CSRF; it was
+  never an identity check. Now the whole API is closed until you sign in: passwords are PBKDF2-SHA256
+  hashed with a per-user random salt, compared with `hmac.compare_digest`, stored `0600` under
+  `<repo>/.fixpilot/auth/`, and sessions are opaque server-side `secrets` tokens in an
+  `HttpOnly; SameSite=Strict` cookie. The first account created is the owner; `setup` refuses to run
+  twice, and self-service sign-up is **off** unless you set `FIXPILOT_ALLOW_SIGNUP=true`.
 * **Approval gate.** `REQUIRE_APPROVAL=true` by default. The proposal path cannot write; the
   write path cannot run without a recorded approval (API `POST /approve`, CLI prompt, or MCP
   `fixpilot_decide` with `confirm=true`).
@@ -206,9 +229,9 @@ fixpilot/
   memory/            project.py (facts) · lessons.py (verified fixes) · sessions.py
   models/            providers.py (Ollama + OpenAI-compatible) · router.py · media.py
   repo/              indexer.py · symbols.py · graph.py · githistory.py
-  security/          policy.py · executor.py · secrets.py · patch.py
+  security/          auth.py (sign-in) · policy.py · executor.py · secrets.py · patch.py
   skills/            base.py + 6 modules registering 11 skills
-  web/               index.html · app.js · styles.css · sw.js · manifest
+  web/               login.html · index.html · app.js · styles.css · sw.js · manifest
 examples/sample-project/   3-bug fixture with reports and tests
 scripts/evaluate.py        benchmark harness + scorecard
 tests/                     stdlib unittest suite
@@ -242,13 +265,15 @@ audit log, Office Kit queue) — add it to the target repo's `.gitignore`.
 
 ```bash
 python3 -m compileall -q fixpilot
-python3 -m unittest discover -s tests -t . -v      # 56 tests
+python3 -m unittest discover -s tests -t . -v      # 86 tests
 python3 scripts/evaluate.py
 ```
 
 The suite covers the security layer, the verifier's output parser, indexing/localisation, skill
-ranking, the full agent loop (propose → approve → apply → verify → rollback) and the MCP layer
-including a real stdio round trip.
+ranking, the full agent loop (propose → approve → apply → verify → rollback), the MCP layer
+including a real stdio round trip, and the auth gate (30 tests: password hashing, session
+lifecycle, the closed-by-default API, and the fact that the login shell never contains the
+mutation token).
 
 `scripts/evaluate.py` runs the three fixture bugs in throwaway workspaces and prints a scorecard:
 localisation accuracy, patch success rate, independent confirmation, false positives, refusal to
