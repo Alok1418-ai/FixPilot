@@ -1,0 +1,20 @@
+{
+  "name": "FixPilot — developer command centre",
+  "short_name": "FixPilot",
+  "description": "Investigate, fix, test and verify real software issues from your phone.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#080b16",
+  "theme_color": "#0b1020",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

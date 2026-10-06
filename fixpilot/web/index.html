@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5" />
+<meta name="theme-color" content="#0b1020" />
+<meta name="description" content="FixPilot — bug reports in, verified patches out, from your phone." />
+<title>FixPilot — phone command centre</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body data-token="__FIXPILOT_TOKEN__">
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">✈</span>
+      <div>
+        <h1>FixPilot</h1>
+        <p id="repo-line" class="muted">connecting…</p>
+      </div>
+    </div>
+    <div class="pills">
+      <span id="pill-link" class="pill">link</span>
+      <span id="pill-model" class="pill">model</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ REPORT / SESSION VIEW ============ -->
+    <section id="view-report" class="view active">
+      <div id="composer" class="card">
+        <label class="card-title" for="report-text">What broke?</label>
+        <p class="hint">Paste a traceback, describe the bug, dictate it, or attach a screenshot. FixPilot finds the cause, writes the patch, and proves it with your tests.</p>
+        <textarea id="report-text" rows="7" placeholder="e.g. checkout crashes for SKUs that are not in the catalogue — KeyError at app/inventory.py:18"></textarea>
+        <div class="row wrap">
+          <button id="btn-voice" class="btn ghost" type="button">🎙 Dictate</button>
+          <label class="btn ghost" for="file-input">📷 Attach screenshot</label>
+          <input id="file-input" type="file" accept="image/*" capture="environment" multiple hidden />
+          <button id="btn-sample" class="btn ghost" type="button">⚡ Load sample bug</button>
+        </div>
+        <div id="attachments" class="chips"></div>
+        <div class="row">
+          <button id="btn-investigate" class="btn primary" type="button">Investigate &amp; fix</button>
+          <button id="btn-clear" class="btn ghost" type="button">Clear</button>
+        </div>
+        <p id="voice-status" class="hint"></p>
+      </div>
+
+      <div id="pipeline" class="card hidden">
+        <div class="card-title">Progress</div>
+        <ol id="timeline" class="timeline"></ol>
+      </div>
+
+      <div id="understanding" class="card hidden">
+        <div class="card-title">What FixPilot understood</div>
+        <div class="md" id="understanding-body"></div>
+      </div>
+
+      <div id="cause" class="card hidden">
+        <div class="card-title">Why it broke</div>
+        <div class="md" id="cause-body"></div>
+        <details id="evidence-box">
+          <summary>Evidence (<span id="evidence-count">0</span>)</summary>
+          <ul id="evidence-list" class="evidence"></ul>
+        </details>
+      </div>
+
+      <div id="patch" class="card hidden">
+        <div class="card-title">Proposed fix <span id="risk-badge" class="pill"></span></div>
+        <div class="md" id="patch-body"></div>
+        <pre class="diff" id="patch-diff"></pre>
+        <div class="row">
+          <button id="btn-approve" class="btn primary" type="button">✅ Approve &amp; verify</button>
+          <button id="btn-reject" class="btn danger ghost" type="button">Reject</button>
+        </div>
+        <p class="hint">Approving applies the patch to your working tree and immediately runs the relevant tests. Nothing is left behind if verification fails — FixPilot rolls it back automatically.</p>
+      </div>
+
+      <div id="verification" class="card hidden">
+        <div class="card-title">Verification</div>
+        <div class="md" id="verification-body"></div>
+        <details id="test-box">
+          <summary>Raw test output</summary>
+          <pre class="terminal" id="test-output"></pre>
+        </details>
+        <div class="row wrap">
+          <button id="btn-rollback" class="btn ghost" type="button">↩︎ Roll back</button>
+          <button id="btn-refine" class="btn ghost" type="button">🔁 Try another strategy</button>
+          <button id="btn-report" class="btn ghost" type="button">📄 Open report</button>
+          <button id="btn-replay" class="btn ghost" type="button">⏱ Replay session</button>
+        </div>
+      </div>
+
+      <div id="replay" class="card hidden">
+        <div class="card-title">Session replay</div>
+        <input id="replay-range" class="range" type="range" min="0" max="0" value="0" />
+        <div class="md" id="replay-body"></div>
+      </div>
+    </section>
+
+    <!-- ============ SESSIONS ============ -->
+    <section id="view-sessions" class="view">
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Debugging sessions</div>
+          <button id="btn-refresh-sessions" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <ul id="session-list" class="sessions"></ul>
+      </div>
+    </section>
+
+    <!-- ============ CONSOLE ============ -->
+    <section id="view-console" class="view">
+      <div class="card">
+        <div class="card-title">Sandboxed console</div>
+        <p class="hint">Every command is checked against the safety policy first. Destructive, privileged or network-reaching commands are refused unless you have explicitly enabled them.</p>
+        <div class="row">
+          <input id="command-input" class="input" type="text" placeholder="python3 -m unittest tests.test_inventory -v" />
+          <button id="btn-run" class="btn primary" type="button">Run</button>
+        </div>
+        <div id="verdict" class="verdict hidden"></div>
+        <pre class="terminal" id="console-output"></pre>
+      </div>
+      <div class="card">
+        <div class="card-title">Ask about this repo</div>
+        <div class="row">
+          <input id="ask-input" class="input" type="text" placeholder="where is the stock level implemented?" />
+          <button id="btn-ask" class="btn ghost" type="button">Ask</button>
+        </div>
+        <div class="md" id="ask-body"></div>
+      </div>
+    </section>
+
+    <!-- ============ SYSTEM ============ -->
+    <section id="view-system" class="view">
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">Repository &amp; runtime</div>
+          <button id="btn-refresh-system" class="btn ghost small" type="button">Refresh</button>
+        </div>
+        <div class="md" id="system-body">loading…</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Model routing</div>
+        <div class="md" id="models-body"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Skills</div>
+        <div class="md" id="skills-body"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Project memory &amp; lessons</div>
+        <div class="md" id="memory-body"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">iQOO Office Kit bridge</div>
+        <div class="md" id="officekit-body"></div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" role="tablist">
+    <button class="tab active" data-view="report" role="tab">🛠 Fix</button>
+    <button class="tab" data-view="sessions" role="tab">🗂 Sessions</button>
+    <button class="tab" data-view="console" role="tab">⌨︎ Console</button>
+    <button class="tab" data-view="system" role="tab">⚙︎ System</button>
+  </nav>
+
+  <div id="overlay" class="overlay hidden"><div class="spinner"></div><p id="overlay-text">working…</p></div>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
