@@ -122,7 +122,7 @@ an **executed** test run that actually passes. Otherwise the session stays `part
 same process as the API. `GET /` inlines the mutation token into the page so the phone can
 approve/apply; `sw.js` caches the shell; every request is same-origin and relative.
 
-Five tabs, each backed by the JSON API:
+Six tabs, each backed by the JSON API:
 
 | Tab | What you can do | Endpoints |
 | --- | --- | --- |
@@ -130,11 +130,36 @@ Five tabs, each backed by the JSON API:
 | **🛠 Fix** | Report by voice / text / log / screenshot, preview what was understood, review the patch (diff, stats, blast radius, risk), approve, apply, re-verify, refine, roll back, replay | `/api/input`, `/api/samples`, `/api/sessions*` |
 | **🗂 Sessions** | Browse and reopen past debugging sessions | `/api/sessions` |
 | **📁 Repo** | Search symbols and code, browse the file tree, read any file (secrets redacted), see the live working-tree diff | `/api/search`, `/api/tree`, `/api/file`, `/api/diff/worktree` |
+| **📈 GitHub** | Delivery dashboard for the served repository: green-before-merge rate, merge and revert rates, time-to-merge, per-week cadence, review queue, recent merges, backlog and CI health | `/api/github` |
 | **⋯ More** | Hub for **Console** (`/api/command`, `/api/ask`), **Safety** (`/api/sandbox`, `/api/audit`, `/api/lessons`) and **System** (`/api/overview`, `/api/models`, `/api/skills`, `/api/memory`, `/api/officekit*`), plus the signed-in account and sign-out | — |
 
 A health poll every 15 s drives the link pill, so a dropped server is visible on screen rather
 than only as a failed request. An expired session bounces you back to the sign-in screen instead
 of failing silently.
+
+### 📈 The GitHub tab
+
+FixPilot's own sessions answer *"was this fix verified?"*. The GitHub tab answers the question
+that follows: **did the fix survive contact with the repository?**
+
+| Signal | Why it is the number to watch |
+| --- | --- |
+| **Green before merge** | Share of merged pull requests whose checks passed on the merged commit. A fix merged over a red build is the most common way a "verified" patch comes back. |
+| **Merge rate** | Merged vs. closed-unmerged — how often work is abandoned rather than landed. |
+| **Revert rate** | Merged *and* reverted. The clearest evidence a change did not hold; the revert list names the PR it undid. |
+| **Time to merge / oldest open** | Median and p90 hours from open to merge, plus the age of the review queue. |
+| **Weekly cadence** | Merges and new pull requests per ISO week, with merges that landed red marked. |
+| **Backlog shape** | Open/closed issues, staleness, and which labels dominate. |
+
+It is read-only by construction: `GET` requests to the GitHub REST API, no writes, no webhooks,
+no GraphQL, no SDK. The token lives server-side only — it is never inlined into the page the
+phone receives (`fixpilot/integrations/github.py`).
+
+Configuration is optional. With no token at all, public repositories still work at 60
+requests/hour; `FIXPILOT_GITHUB_TOKEN` raises that to 5000 and unlocks private repos, and
+`FIXPILOT_GITHUB_REPO` overrides the repository auto-detected from the `origin` remote. A sync
+that fails — expired token, spent rate limit, no network — is served as the **last good snapshot
+flagged `stale`** rather than an error page, so the phone still shows something true and dated.
 
 **CLI** (`python3 -m fixpilot …`)
 
@@ -225,6 +250,7 @@ fixpilot/
   cli.py             argparse CLI (incl. the mcp subcommand)
   core/              agent.py (state machine) · engine.py (investigate/plan)
                      fixes.py (strategies) · verifier.py (tests) · narrator.py
+  integrations/      github.py (read-only PR/issue/CI insights for the dashboard)
   mcp/               server.py (stdio JSON-RPC, 13 tools) · client.py
   memory/            project.py (facts) · lessons.py (verified fixes) · sessions.py
   models/            providers.py (Ollama + OpenAI-compatible) · router.py · media.py
@@ -254,10 +280,15 @@ Copy `.env.example` to `.env` and edit. Everything is optional; the defaults are
 Highlights: `FIXPILOT_REPO`, `FIXPILOT_HOST`/`PORT`, `REQUIRE_APPROVAL`,
 `MAX_REFINE_ITERATIONS`, `ALLOW_NETWORK`, `ALLOW_DEP_INSTALL`, `ALLOW_COMMANDS`,
 `MODEL_STRATEGY`, `OLLAMA_URL`, `OLLAMA_FAST`/`REASON`/`VISION`, `OPENAI_BASE_URL`,
-`OPENAI_API_KEY`, `AUTO_PUSH`, `DEMO_MODE`.
+`OPENAI_API_KEY`, `AUTO_PUSH`, `DEMO_MODE`, `GITHUB_REPO`, `GITHUB_TOKEN`,
+`GITHUB_CACHE_SECONDS`, `GITHUB_WEEKS`, `GITHUB_CHECK_BUDGET`, `GITHUB_API`.
+
+`FIXPILOT_GITHUB_TOKEN` is the FixPilot-prefixed form; plain `GITHUB_TOKEN` / `GH_TOKEN`
+are honoured too, so a machine that already runs `gh` needs no extra configuration.
 
 State written by FixPilot lives in `<repo>/.fixpilot/` (index, sessions, backups, repros,
-audit log, Office Kit queue) — add it to the target repo's `.gitignore`.
+audit log, Office Kit queue, the last GitHub sync snapshot) — add it to the target repo's
+`.gitignore`.
 
 ---
 
@@ -265,15 +296,20 @@ audit log, Office Kit queue) — add it to the target repo's `.gitignore`.
 
 ```bash
 python3 -m compileall -q fixpilot
-python3 -m unittest discover -s tests -t . -v      # 86 tests
+python3 -m unittest discover -s tests -t . -v      # 133 tests
 python3 scripts/evaluate.py
 ```
 
 The suite covers the security layer, the verifier's output parser, indexing/localisation, skill
 ranking, the full agent loop (propose → approve → apply → verify → rollback), the MCP layer
-including a real stdio round trip, and the auth gate (30 tests: password hashing, session
-lifecycle, the closed-by-default API, and the fact that the login shell never contains the
-mutation token).
+including a real stdio round trip, the auth gate (password hashing, session lifecycle, the
+closed-by-default API, and the fact that the login shell never contains the mutation token), and
+the GitHub insights (47 tests: remote-URL parsing, every metric against fixtures, cache and
+snapshot degradation, and the fact that neither the GitHub token nor the mutation token ever
+reaches a response).
+
+No test touches the network: the HTTP layer is driven through a stub client, which is why
+fetching and arithmetic live apart from each other in `integrations/github.py`.
 
 `scripts/evaluate.py` runs the three fixture bugs in throwaway workspaces and prints a scorecard:
 localisation accuracy, patch success rate, independent confirmation, false positives, refusal to
@@ -306,6 +342,7 @@ Everything below is implemented and covered by the test suite or the benchmark h
 | Rollback and debugging-session replay | ✅ byte-exact backups + event log |
 | Project memory | ✅ facts, lessons and verified fixes per repo |
 | Skills and MCP tool support | ✅ 11 skills · 13 MCP tools |
+| GitHub delivery insights (merge quality, reverts, CI-before-merge, cadence) | ✅ shipped (`fixpilot/integrations/github.py`) |
 | iQOO Office Kit phone ↔ computer integration | ✅ pair, queue, worker round trip |
 | Container-isolated execution backends | ⏭ next (subprocess sandbox today) |
 | Multi-language root-cause heuristics beyond Python/JS/Go/Java parsers | ⏭ next |

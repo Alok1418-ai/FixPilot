@@ -61,6 +61,87 @@
       </div>
     </section>
 
+    <!-- ============ GITHUB INSIGHTS ============ -->
+    <section id="view-github" class="view">
+      <div class="card">
+        <div class="row between">
+          <div class="card-title">GitHub <span id="gh-sync" class="pill">…</span></div>
+          <div class="row">
+            <select id="gh-weeks" class="input" style="width:auto;min-width:86px;padding:6px 8px;font-size:12px">
+              <option value="4">4 weeks</option>
+              <option value="8" selected>8 weeks</option>
+              <option value="12">12 weeks</option>
+              <option value="26">26 weeks</option>
+            </select>
+            <button id="btn-refresh-github" class="btn ghost small" type="button">Sync</button>
+          </div>
+        </div>
+        <div class="md" id="gh-summary">loading…</div>
+      </div>
+
+      <div id="gh-setup" class="card hidden">
+        <div class="card-title">Connect a repository</div>
+        <div class="md" id="gh-setup-body"></div>
+      </div>
+
+      <div id="gh-error" class="card hidden">
+        <div class="card-title">Sync problem</div>
+        <div class="md" id="gh-error-body"></div>
+      </div>
+
+      <div class="kpis" id="gh-kpis"></div>
+
+      <div id="gh-cadence-card" class="card hidden">
+        <div class="row between">
+          <div class="card-title">Delivery cadence</div>
+          <span class="pill" id="gh-cadence-range"></span>
+        </div>
+        <p class="hint">Merges and new pull requests per week. A red bar is a merge that landed while CI was red.</p>
+        <div class="trend-scroll">
+          <div id="gh-trend" class="trend"></div>
+          <div id="gh-trend-labels" class="tlabels"></div>
+        </div>
+        <div class="legend" id="gh-trend-legend"></div>
+        <div id="gh-speed" class="statgrid"></div>
+      </div>
+
+      <div id="gh-ci-card" class="card hidden">
+        <div class="card-title">CI on merges</div>
+        <div id="gh-ci-stats" class="statgrid"></div>
+        <div class="md" id="gh-ci-body"></div>
+        <ul id="gh-runs" class="activity"></ul>
+      </div>
+
+      <div id="gh-queue-card" class="card hidden">
+        <div class="row between">
+          <div class="card-title">Review queue <span id="gh-queue-count" class="pill">0</span></div>
+        </div>
+        <p class="hint">Open pull requests, most recently updated first.</p>
+        <ul id="gh-queue" class="gh-list"></ul>
+      </div>
+
+      <div id="gh-merges-card" class="card hidden">
+        <div class="card-title">Recent merges</div>
+        <p class="hint">Merges that landed — and any that were later reverted.</p>
+        <ul id="gh-merges" class="gh-list"></ul>
+      </div>
+
+      <div id="gh-issues-card" class="card hidden">
+        <div class="row between">
+          <div class="card-title">Issues</div>
+          <span class="pill" id="gh-labels-pill">loading…</span>
+        </div>
+        <div id="gh-issues-stats" class="statgrid"></div>
+        <div class="bars" id="gh-issues-labels"></div>
+      </div>
+
+      <div id="gh-pulse-card" class="card hidden">
+        <div class="card-title">Repository pulse</div>
+        <div id="gh-pulse" class="statgrid"></div>
+        <div class="md" id="gh-pulse-body"></div>
+      </div>
+    </section>
+
     <!-- ============ REPORT / SESSION VIEW ============ -->
     <section id="view-report" class="view">
       <div id="composer" class="card">
@@ -330,6 +411,7 @@
     <button class="tab" data-view="report" role="tab"><span class="tab-i">🛠</span>Fix</button>
     <button class="tab" data-view="sessions" role="tab"><span class="tab-i">🗂</span>Sessions</button>
     <button class="tab" data-view="repo" role="tab"><span class="tab-i">📁</span>Repo</button>
+    <button class="tab" data-view="github" role="tab"><span class="tab-i">📈</span>GitHub</button>
     <button class="tab" data-view="more" role="tab"><span class="tab-i">⋯</span>More</button>
   </nav>
 

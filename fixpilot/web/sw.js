@@ -1,6 +1,6 @@
 /* FixPilot service worker: cache the shell so the app opens instantly on a phone.
    API traffic is always network-only — a stale API response would be a lie. */
-const SHELL = "fixpilot-shell-v3";
+const SHELL = "fixpilot-shell-v4";   // v4: GitHub tab added to the shell
 const ASSETS = ["/", "/styles.css", "/app.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

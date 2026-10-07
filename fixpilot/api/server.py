@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from ..config import Settings
 from ..core.agent import FixPilotAgent
+from ..integrations.github import GitHubInsights
 from ..officekit import OfficeKitBridge
 from ..util import excerpt, new_id, now_iso, redact
 from ..security.auth import AuthError, AuthStore
@@ -110,6 +111,9 @@ class FixPilotServer:
         # `--no-auth` means "trusted local machine": no token and no login gate.
         self.auth_enabled = bool(settings.auth.enabled and require_token)
         self.bridge = OfficeKitBridge(settings)
+        # Read-only GitHub insights behind the GitHub tab. Constructed eagerly
+        # (cheap, no network) but it only ever fetches on request.
+        self.github = GitHubInsights(settings)
         self.static_dir = Path(__file__).resolve().parent.parent / "web"
         self.started_at = now_iso()
         self.routes: list[tuple[str, re.Pattern[str], Callable[[Request], Response]]] = []
@@ -166,6 +170,7 @@ class FixPilotServer:
             ("POST", r"/api/auth/logout", self.h_auth_logout),
             ("GET", r"/api/auth/me", self.h_auth_me),
             ("GET", r"/api/dashboard", self.h_dashboard),
+            ("GET", r"/api/github", self.h_github),
             ("GET", r"/api/health", self.h_health),
             ("GET", r"/api/overview", self.h_overview),
             ("GET", r"/api/skills", self.h_skills),
@@ -359,6 +364,31 @@ class FixPilotServer:
                 "skills": len(self.agent.registry),
             },
         })
+
+    # -- github --------------------------------------------------------
+    def h_github(self, request: Request) -> Response:
+        """Read-only PR / issue / CI insights for the GitHub tab.
+
+        Always 200: an unreachable GitHub or a spent rate limit comes back as
+        data (``ok: false`` with a hint, plus the last good snapshot flagged
+        ``stale``), because a dashboard that errors out is useless exactly when
+        you are away from your desk and need it most.
+        """
+        weeks = 0
+        raw_weeks = request.q("weeks")
+        if raw_weeks:
+            try:
+                weeks = max(2, min(26, int(raw_weeks)))
+            except ValueError:
+                raise ApiError(400, "weeks must be an integer between 2 and 26") from None
+        return Response(
+            200,
+            self.github.load(
+                force=request.q("refresh").lower() in {"1", "true", "yes"},
+                repo=request.q("repo").strip(),
+                weeks=weeks,
+            ),
+        )
 
     # -- health / introspection ----------------------------------------
     def h_health(self, request: Request) -> Response:
