@@ -157,6 +157,49 @@ class ModelSettings:
 
 
 @dataclass(slots=True)
+class GitHubSettings:
+    """Read-only GitHub insights for the dashboard (pull requests, issues, CI).
+
+    The token is optional on purpose: a public repository works unauthenticated
+    at 60 requests/hour, and the dashboard says so rather than failing.  The
+    token itself is never part of :meth:`public` — only its presence.
+    """
+
+    # FIXPILOT_GITHUB_TOKEN first, then the conventional GITHUB_TOKEN / GH_TOKEN
+    # that `gh` and GitHub Actions already export.
+    token: str = _env("GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "").strip() or os.environ.get("GH_TOKEN", "").strip()
+    # owner/name. Empty → auto-detected from the served repository's git remote.
+    repo: str = _env("GITHUB_REPO")
+    api_base: str = _env("GITHUB_API", "https://api.github.com")
+    cache_seconds: int = _env_int("GITHUB_CACHE_SECONDS", 300)
+    timeout: int = _env_int("GITHUB_TIMEOUT", 20)
+    weeks: int = max(2, min(26, _env_int("GITHUB_WEEKS", 8)))
+    max_pull_requests: int = _env_int("GITHUB_MAX_PRS", 40)
+    max_issues: int = _env_int("GITHUB_MAX_ISSUES", 60)
+    # Per-PR detail (additions/deletions/review counts) costs one call each.
+    detail_budget: int = _env_int("GITHUB_DETAIL_PRS", 20)
+    # One CI call per commit is the expensive part of the sync.
+    check_budget: int = _env_int("GITHUB_CHECK_BUDGET", 25)
+    workflow_runs: bool = _env_bool("GITHUB_WORKFLOW_RUNS", True)
+    # Allow unauthenticated reads of public repositories (60 req/hour).
+    anonymous: bool = _env_bool("GITHUB_ANONYMOUS", True)
+
+    def public(self) -> dict[str, object]:
+        return {
+            "repo": self.repo or None,
+            "api_base": self.api_base,
+            "token_present": bool(self.token),
+            "anonymous_reads": self.anonymous,
+            "cache_seconds": self.cache_seconds,
+            "weeks": self.weeks,
+            "max_pull_requests": self.max_pull_requests,
+            "max_issues": self.max_issues,
+            "check_budget": self.check_budget,
+            "workflow_runs": self.workflow_runs,
+        }
+
+
+@dataclass(slots=True)
 class Settings:
     """Root settings object."""
 
@@ -172,6 +215,7 @@ class Settings:
     sandbox: SandboxLimits = field(default_factory=SandboxLimits)
     models: ModelSettings = field(default_factory=ModelSettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
+    github: GitHubSettings = field(default_factory=GitHubSettings)
 
     def __post_init__(self) -> None:
         if not str(self.data_dir) or str(self.data_dir) == ".":
@@ -204,6 +248,10 @@ class Settings:
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
 
+    @property
+    def github_dir(self) -> Path:
+        return self.data_dir / "github"
+
     def ensure_dirs(self) -> None:
         for path in (
             self.data_dir,
@@ -211,6 +259,7 @@ class Settings:
             self.memory_dir,
             self.worktrees_dir,
             self.uploads_dir,
+            self.github_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -228,6 +277,7 @@ class Settings:
             "sandbox": self.sandbox.public(),
             "models": self.models.public(),
             "auth": self.auth.public(),
+            "github": self.github.public(),
         }
 
 

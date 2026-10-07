@@ -113,6 +113,7 @@
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === tabName));
     window.scrollTo({ top: 0 });
     if (name === "home") loadDashboard();
+    if (name === "github") loadGitHub(false);
     if (name === "sessions") loadSessions();
     if (name === "repo") loadRepo();
     if (name === "safety") loadSafety();
@@ -471,7 +472,9 @@
         `- tests: ${overview.repo.test_command && overview.repo.test_command.length ? "`" + overview.repo.test_command.join(" ") + "`" : "none detected"}\n` +
         `- memory: ${overview.memory.facts || 0} facts, ${overview.lessons.total || 0} lessons (${overview.lessons.verified || 0} verified)\n` +
         `- sandbox: timeouts ${overview.sandbox.limits.timeout_seconds}s, network ${overview.sandbox.limits.allow_network ? "enabled" : "blocked"}, ${overview.sandbox.commands_run} commands run\n` +
-        `- approval gate: ${overview.settings.require_approval ? "required" : "disabled"}`
+        `- approval gate: ${overview.settings.require_approval ? "required" : "disabled"}\n` +
+        `- github insights: ${(overview.settings.github && overview.settings.github.repo) || "auto-detect from origin"} · ` +
+        `${overview.settings.github && overview.settings.github.token_present ? "token set" : "unauthenticated (60 req/h)"}`
       );
       $("pill-model").textContent = models.strategy;
       $("pill-model").className = `pill ${models.strategy === "local-first" ? "ok" : "warn"}`;
@@ -854,6 +857,276 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* github insights                                                    */
+  /* ------------------------------------------------------------------ */
+  const GH_BADGE = {
+    passed: ["ok", "CI green"],
+    failed: ["bad", "CI red"],
+    running: ["warn", "CI running"],
+    none: ["", "no CI"],
+  };
+
+  function ghBadge(verdict) {
+    const meta = GH_BADGE[verdict] || GH_BADGE.none;
+    return `<span class="pill ${meta[0]}">${meta[1]}</span>`;
+  }
+
+  function pct(value) {
+    return value == null ? "–" : `${Math.round(value * 100)}%`;
+  }
+
+  function humanHours(hours) {
+    if (hours == null) return "–";
+    if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
+    if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h`;
+    return `${(hours / 24).toFixed(1)}d`;
+  }
+
+  function humanDays(days) {
+    if (days == null) return "–";
+    if (days < 1) return "today";
+    if (days < 30) return `${Math.round(days)}d`;
+    if (days < 365) return `${(days / 30).toFixed(1)}mo`;
+    return `${(days / 365).toFixed(1)}y`;
+  }
+
+  function ago(iso) {
+    if (!iso) return "";
+    const then = Date.parse(iso);
+    if (Number.isNaN(then)) return "";
+    const seconds = Math.max(0, (Date.now() - then) / 1000);
+    if (seconds < 90) return "just now";
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+    return `${Math.round(seconds / 86400)}d ago`;
+  }
+
+  function plural(count, noun) {
+    return `${count} ${noun}${count === 1 ? "" : "s"}`;
+  }
+
+  /* Only https links are ever rendered — a dashboard is not an open redirector. */
+  function safeUrl(url) {
+    const text = String(url || "");
+    return /^https:\/\/[^\s"'<>]+$/i.test(text) ? text : "";
+  }
+
+  function kpiCards(items) {
+    return items.map((item) =>
+      `<div class="kpi ${item[3] || ""}"><span class="v">${escapeHtml(String(item[1]))}</span>` +
+      `<span class="k">${escapeHtml(String(item[0]))}</span>` +
+      `<span class="sub">${escapeHtml(String(item[2] || ""))}</span></div>`).join("");
+  }
+
+  function ghRow(row) {
+    const bits = [];
+    if (row.draft) bits.push(`<span class="pill">draft</span>`);
+    bits.push(ghBadge(row.checks));
+    const size = (row.additions || row.deletions) ? `<span class="pill ok">+${row.additions}</span><span class="pill bad">&minus;${row.deletions}</span>` : "";
+    const reviews = row.review_comments ? `<span class="pill">💬 ${row.review_comments}</span>` : `<span class="pill warn">no review</span>`;
+    const labels = (row.labels || []).map((label) => `<span class="kv">${escapeHtml(label.name)}</span>`).join("");
+    const meta = row.merged_at
+      ? `merged ${ago(row.merged_at)} · in ${humanHours(row.hours_to_merge)}${row.revert ? " · ↩︎ reverted" : ""}${row.reverts ? `: ${escapeHtml(String(row.reverts).slice(0, 60))}` : ""}`
+      : `opened ${humanDays(row.age_days)} ago · updated ${ago(row.updated_at)}`;
+    const href = safeUrl(row.url);
+    const title = `#${row.number} · ${escapeHtml(String(row.title).slice(0, 110))}`;
+    return `<li class="${row.revert ? "revert" : ""}">
+        ${href ? `<a class="gh-title" href="${href}" target="_blank" rel="noopener noreferrer">${title}</a>` : `<span class="gh-title">${title}</span>`}
+        <div class="gh-meta">@${escapeHtml(row.author)} · ${meta}</div>
+        <div class="chips">${bits.join("")}${size}${row.merged_at ? "" : reviews}${labels}</div>
+      </li>`;
+  }
+
+  /* The columns are sized by the label row, so both grids stay aligned. */
+  function renderTrend(weeks) {
+    const top = Math.max(1, ...weeks.map((week) => Math.max(week.merged || 0, week.opened || 0)));
+    const height = (value) => (value ? `${Math.max(4, Math.round((value / top) * 100))}%` : "0");
+    $("gh-trend").innerHTML = weeks.map((week) =>
+      `<div class="tcol" title="${escapeHtml(week.label)} — ${week.opened} opened · ${week.merged} merged${week.ci_red_merged ? ` · ${week.ci_red_merged} with red CI` : ""}">
+         <span class="tbar opened" style="height:${height(week.opened)}"></span>
+         <span class="tbar merged" style="height:${height(week.merged)}"></span>
+         <span class="tbar red" style="height:${height(week.ci_red_merged)}"></span>
+       </div>`).join("");
+    $("gh-trend-labels").innerHTML = weeks
+      .map((week) => `<span class="tlabel">${escapeHtml(week.label)}</span>`).join("");
+  }
+
+  function renderGitHub(data) {
+    const repo = data.repo || {};
+    const pulls = data.pulls || {};
+    const issues = data.issues || {};
+    const ci = data.ci || {};
+
+    /* sync state */
+    const sync = $("gh-sync");
+    if (data.stale) { sync.textContent = "stale"; sync.className = "pill warn"; }
+    else if (!data.ok) { sync.textContent = data.configured ? "error" : "not set up"; sync.className = "pill bad"; }
+    else if (data.from_cache) { sync.textContent = `cached ${Math.round(data.age_seconds || 0)}s`; sync.className = "pill"; }
+    else { sync.textContent = `live · ${data.elapsed_ms || 0}ms`; sync.className = "pill ok"; }
+
+    /* header summary */
+    const rate = data.rate_limit || {};
+    const head = ci.head || {};
+    const summary = [];
+    if (data.repository) {
+      summary.push(`**${data.repository}**${repo.description ? ` — ${String(repo.description).slice(0, 120)}` : ""}`);
+      summary.push(`- branch \`${repo.default_branch || "?"}\` · ${repo.language || "n/a"}${repo.private ? " · private" : ""}${repo.archived ? " · **archived**" : ""}`);
+      if (head.sha) summary.push(`- HEAD \`${head.sha}\` ${String(head.message || "").slice(0, 70)} · ${ago(head.date)}`);
+      summary.push(`- synced ${ago(data.fetched_at)} · ${data.authenticated ? "authenticated" : "unauthenticated"}` +
+        (rate.remaining != null ? ` · GitHub rate limit ${rate.remaining}/${rate.limit}` : ""));
+      if (data.truncated) summary.push(`- ⚠️ showing the newest ${pulls.sampled} pull requests; older ones are outside the sync window`);
+    } else {
+      summary.push("No GitHub repository is connected to this FixPilot instance.");
+    }
+    $("gh-summary").innerHTML = md(summary.join("\n"));
+
+    /* setup / error cards */
+    $("gh-setup").classList.toggle("hidden", Boolean(data.configured));
+    if (!data.configured) {
+      $("gh-setup-body").innerHTML = md(
+        `${data.hint || "Point FixPilot at a GitHub repository."}\n\n` +
+        "- **Repository:** `FIXPILOT_GITHUB_REPO=owner/name` — auto-detected from the `origin` remote when omitted\n" +
+        "- **Token:** `FIXPILOT_GITHUB_TOKEN=github_pat_…` — a fine-grained token with read-only *Contents*, *Pull requests*, *Issues*, *Checks* and *Actions* is enough\n" +
+        "- Public repositories also work with no token at all, at 60 requests/hour\n" +
+        "- The token is only ever held server-side; it is never sent to this page"
+      );
+    }
+    $("gh-error").classList.toggle("hidden", Boolean(data.ok) || !data.configured);
+    if (!data.ok && data.configured) {
+      $("gh-error-body").innerHTML = md(
+        `${data.error || "GitHub could not be reached."}\n\n` +
+        `- ${data.hint || "Tap Sync to retry."}\n` +
+        (data.stale ? `- Showing the last successful sync from **${ago(data.fetched_at)}** — numbers below may be out of date.` : "")
+      );
+    }
+
+    /* KPIs — the four questions worth answering at a glance */
+    const green = pulls.ci_green_rate;
+    const greenMeta = pulls.ci_judged
+      ? `${pulls.ci_green_merged} green · ${pulls.ci_red_merged} red of ${pulls.ci_judged} merged`
+      : "no CI checks on merged PRs";
+    $("gh-kpis").innerHTML = kpiCards([
+      ["Green before merge", pct(green), greenMeta, green == null ? "" : green >= 0.8 ? "ok" : "warn"],
+      ["Merge rate", pct(pulls.merge_rate), `${pulls.merged || 0} merged · ${pulls.closed_unmerged || 0} closed unmerged`, pulls.merge_rate == null ? "" : pulls.merge_rate >= 0.7 ? "ok" : "warn"],
+      ["Revert rate", pct(pulls.revert_rate), `${plural(pulls.reverted || 0, "revert")} of ${pulls.merged || 0} merges`, (pulls.reverted || 0) > 0 ? "warn" : ""],
+      ["Open pulls", pulls.open || 0, `${pulls.draft || 0} draft · ${pulls.stale_open || 0} stale`, (pulls.stale_open || 0) > 0 ? "warn" : ""],
+    ]);
+
+    /* cadence */
+    $("gh-cadence-card").classList.toggle("hidden", !data.configured);
+    const weeks = data.trend || [];
+    if (weeks.length) {
+      $("gh-cadence-range").textContent = `${weeks[0].label} → ${weeks[weeks.length - 1].label}`;
+      renderTrend(weeks);
+    }
+    $("gh-trend-legend").innerHTML =
+      `<span class="key"><i class="sw opened"></i>opened</span><span class="key"><i class="sw merged"></i>merged</span><span class="key"><i class="sw red"></i>merged with red CI</span>`;
+    $("gh-speed").innerHTML = statGrid([
+      ["median merge", humanHours(pulls.median_merge_hours), ""],
+      ["p90 merge", humanHours(pulls.p90_merge_hours), ""],
+      ["median open age", humanDays(pulls.median_open_age_days), (pulls.median_open_age_days || 0) > 7 ? "bad" : ""],
+      ["oldest open", humanDays(pulls.oldest_open_days), (pulls.oldest_open_days || 0) > 14 ? "bad" : ""],
+    ]);
+
+    /* CI on merges */
+    $("gh-ci-card").classList.toggle("hidden", !data.configured);
+    $("gh-ci-stats").innerHTML = statGrid([
+      ["green merges", pulls.ci_green_merged || 0, "ok"],
+      ["red merges", pulls.ci_red_merged || 0, (pulls.ci_red_merged || 0) ? "bad" : ""],
+      ["PRs running", pulls.ci_running_open || 0, ""],
+      ["PRs failing", pulls.ci_failing_open || 0, (pulls.ci_failing_open || 0) ? "bad" : ""],
+    ]);
+    const ciLines = [];
+    if (!pulls.ci_judged) {
+      ciLines.push("None of the sampled merges carry check runs or commit statuses, so \"green before merge\" cannot be measured for this repository.");
+    } else {
+      ciLines.push(`${pulls.ci_green_merged} of ${pulls.ci_judged} merged pull requests had passing checks on the commit that was merged.`);
+      if (pulls.ci_red_merged) {
+        ciLines.push(`> ⚠️ ${plural(pulls.ci_red_merged, "merge")} landed with failing checks — that is where a fix most often comes back.`);
+      }
+    }
+    if (pulls.unreviewed_open) ciLines.push(`- ${plural(pulls.unreviewed_open, "open pull request")} with no review comment yet`);
+    if (ci.passed || ci.failed) ciLines.push(`- Default-branch workflow runs sampled: ${ci.passed} passing · ${ci.failed} failing`);
+    $("gh-ci-body").innerHTML = md(ciLines.join("\n"));
+    $("gh-runs").innerHTML = (ci.recent || []).length
+      ? ci.recent.map((run) => {
+          const state = run.conclusion === "success" ? "verified" : run.conclusion ? "failed" : "awaiting_approval";
+          const label = run.conclusion || run.status || "unknown";
+          return `<li><span class="dot ${state}"></span><span><span class="t">${escapeHtml(run.name)}</span>` +
+            `<span class="s">${escapeHtml(label)} · ${escapeHtml(run.event || "")} · ${escapeHtml(run.branch || "")} · ${escapeHtml(run.sha || "")}</span></span>` +
+            `<span class="when">${escapeHtml(ago(run.updated_at))}</span></li>`;
+        }).join("")
+      : `<li><span class="dot"></span><span><span class="t">No workflow runs sampled</span><span class="s">CI falls back to commit statuses when Actions is not used</span></span><span class="when"></span></li>`;
+
+    /* review queue */
+    const queue = data.queue || [];
+    $("gh-queue-card").classList.toggle("hidden", !data.configured);
+    $("gh-queue-count").textContent = String(queue.length);
+    $("gh-queue").innerHTML = queue.length
+      ? queue.map(ghRow).join("")
+      : `<li class="empty">No open pull requests — the queue is clear. 🎉</li>`;
+
+    /* merges */
+    const merges = data.merges || [];
+    $("gh-merges-card").classList.toggle("hidden", !data.configured);
+    $("gh-merges").innerHTML = merges.length
+      ? merges.map(ghRow).join("")
+      : `<li class="empty">No merges in the sampled window.</li>`;
+
+    /* issues */
+    $("gh-issues-card").classList.toggle("hidden", !data.configured);
+    $("gh-issues-stats").innerHTML = statGrid([
+      ["open", issues.open || 0, ""],
+      ["closed", issues.closed || 0, "ok"],
+      ["stale", issues.stale_open || 0, (issues.stale_open || 0) ? "bad" : ""],
+      ["unlabelled", issues.unlabelled_open || 0, ""],
+    ]);
+    $("gh-labels-pill").textContent = `${issues.open || 0} open · ${humanDays(issues.oldest_open_days)} oldest`;
+    const labels = issues.labels || [];
+    const labelTop = Math.max(1, ...labels.map((label) => label.count));
+    $("gh-issues-labels").innerHTML = labels.length
+      ? labels.map((label) =>
+          `<div class="bar-row"><span class="lbl">${escapeHtml(label.name)}</span>` +
+          `<span class="bar-track"><span class="bar-fill" style="width:${Math.round((label.count / labelTop) * 100)}%"></span></span>` +
+          `<span class="num">${label.count}</span></div>`).join("")
+      : `<p class="hint">No labelled open issues in the sampled window.</p>`;
+
+    /* pulse */
+    $("gh-pulse-card").classList.toggle("hidden", !data.configured);
+    $("gh-pulse").innerHTML = statGrid([
+      ["stars", repo.stars || 0, ""],
+      ["forks", repo.forks || 0, ""],
+      ["watchers", repo.watchers || 0, ""],
+      ["open issues", repo.open_issues || 0, ""],
+    ]);
+    const pulse = [];
+    pulse.push(`- created ${humanDays(repo.age_days)} ago · last push ${humanDays(repo.pushed_days)} ago${repo.license ? ` · ${repo.license}` : " · no licence file"}`);
+    if ((repo.topics || []).length) pulse.push(`- topics: ${repo.topics.join(", ")}`);
+    const authors = data.authors || [];
+    if (authors.length) {
+      pulse.push(`- top contributors: ${authors.map((a) => `${a.login} (${a.merged} merged, ${a.open} open)`).join(" · ")}`);
+    }
+    if (data.hint) pulse.push(`> ${data.hint}`);
+    const repoLink = safeUrl(repo.url || data.repository_url);
+    $("gh-pulse-body").innerHTML = md(pulse.join("\n")) +
+      (repoLink ? `<p><a class="btn ghost small" href="${repoLink}" target="_blank" rel="noopener noreferrer">↗ Open ${escapeHtml(data.repository || "repository")} on GitHub</a></p>` : "");
+  }
+
+  async function loadGitHub(force) {
+    const weeks = ($("gh-weeks") && $("gh-weeks").value) || "8";
+    const query = `?weeks=${encodeURIComponent(weeks)}${force ? "&refresh=1" : ""}`;
+    try {
+      const data = await api("GET", `/api/github${query}`);
+      state.github = data;
+      renderGitHub(data);
+    } catch (error) {
+      $("gh-error").classList.remove("hidden");
+      $("gh-error-body").innerHTML = md(`Could not load GitHub insights.\n\n- ${error.message}`);
+      toast(error.message, 3000);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /* account                                                            */
   /* ------------------------------------------------------------------ */
   async function loadAccount() {
@@ -947,6 +1220,10 @@
   $("btn-refresh-jobs").addEventListener("click", loadOfficeKit);
   $("btn-pair").addEventListener("click", pairDevice);
   $("btn-enqueue").addEventListener("click", enqueueJob);
+
+  /* github insights */
+  $("btn-refresh-github").addEventListener("click", () => loadGitHub(true));
+  $("gh-weeks").addEventListener("change", () => loadGitHub(false));
 
   /* dashboard, "More" hub and account */
   $("btn-refresh-home").addEventListener("click", loadDashboard);
